@@ -3,16 +3,14 @@ package main
 import (
 	"fmt"
 	"log"
-	"math/rand"
-	"sync"
-	"time"
+	"runtime"
 
 	"aetherdb/aether/api"
 	aethernet "aetherdb/aether/net"
 )
 
 func main() {
-	db, err := api.Open("./aether.db", 128<<20)
+	db, err := api.Open("./aether.db", 256<<20)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -26,27 +24,21 @@ func main() {
 		}
 	}()
 
-	// In-process concurrency demo using lock-free API calls.
-	var wg sync.WaitGroup
-	workers := 64
-	opPerWorker := 2000
-	start := time.Now()
-	for w := 0; w < workers; w++ {
-		wg.Add(1)
-		go func(id int) {
-			defer wg.Done()
-			r := rand.New(rand.NewSource(time.Now().UnixNano() + int64(id)))
-			for i := 0; i < opPerWorker; i++ {
-				k := fmt.Sprintf("key-%d-%d", id, r.Intn(4000))
-				v := []byte(fmt.Sprintf("value-from-%d-%d", id, i))
-				_ = db.Put(k, v)
-				_, _, _ = db.Get(k)
-			}
-		}(w)
+	// Required stress scenario: 100k concurrent writes via goroutines.
+	result, err := api.RunConcurrentWriteScenario(db, 100000, runtime.NumCPU()*8, 256)
+	if err != nil {
+		log.Fatal(err)
 	}
-	wg.Wait()
-	_ = db.SyncAll()
-	fmt.Printf("completed %d operations in %s\n", workers*opPerWorker*2, time.Since(start))
+	if err := db.SyncAll(); err != nil {
+		log.Fatal(err)
+	}
+	fmt.Printf("100k concurrent write scenario => records=%d workers=%d valueSize=%dB duration=%s throughput=%.2f rec/s\n",
+		result.TotalRecords,
+		result.Workers,
+		result.ValueSize,
+		result.Duration,
+		result.Throughput,
+	)
 
 	select {}
 }
